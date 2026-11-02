@@ -25,6 +25,7 @@
 
 // C++
 #include <cmath>
+#include <QDebug>
 
 // Qt
 #include <QAbstractButton>
