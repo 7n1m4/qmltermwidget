@@ -1058,6 +1058,8 @@ public:
     int value() const;
     int minimum() const;
     int maximum() const;
+    int singleStep() const;
+    int pageStep() const;
 
     bool isHidden() const;
     void hide();

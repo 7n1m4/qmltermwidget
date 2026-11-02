@@ -277,6 +277,10 @@ void TerminalDisplay::fontChange(const QFont&)
 
   _fontAscent = fm.ascent();
 
+  if (!_scrollAnimating) {
+      _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+      _scrollOffset = 0;
+  }
   emit changedFontMetricSignal( _fontHeight, _fontWidth );
   propagateSize();
 
@@ -503,6 +507,7 @@ TerminalDisplay::~TerminalDisplay()
 {
   disconnect(_blinkTimer);
   disconnect(_blinkCursorTimer);
+  if (_scrollTimer) disconnect(_scrollTimer);
   if (_hideMouseTimer)
     disconnect(_hideMouseTimer.get());
   qApp->removeEventFilter( this );
@@ -1198,6 +1203,12 @@ void TerminalDisplay::updateImage()
 
   setScroll( _screenWindow->currentLine() , _screenWindow->lineCount() );
 
+  // keep fractional smooth-scroll state consistent
+  if (!_scrollAnimating) {
+      _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+      _scrollOffset = 0;
+  }
+
   Q_ASSERT( this->_usedLines <= this->_lines );
   Q_ASSERT( this->_usedColumns <= this->_columns );
 
@@ -1565,6 +1576,15 @@ void TerminalDisplay::paint(QPainter *painter)
     else
         regToDraw &= cr;
 
+    if (_scrollOffset != 0) {
+        // expand clip to cover one extra line
+        regToDraw += QRegion(cr.adjusted(0, -_fontHeight, 0, _fontHeight));
+    }
+
+    painter->save();
+    if (_scrollOffset != 0)
+        painter->translate(0, _scrollOffset);
+
     for (auto rect = regToDraw.begin(); rect != regToDraw.end(); rect++)
     {
         drawBackground(*painter,*rect,palette().window().color(),
@@ -1572,6 +1592,8 @@ void TerminalDisplay::paint(QPainter *painter)
         drawContents(*painter, *rect);
     }
     drawInputMethodPreeditString(*painter,preeditRect());
+
+    painter->restore();
     paintFilters(*painter);
 }
 
@@ -2095,6 +2117,12 @@ void TerminalDisplay::blinkCursorEvent()
 
 void TerminalDisplay::resizeEvent(QResizeEvent*)
 {
+  if (_scrollAnimating) {
+      _scrollTimer->stop();
+      _scrollAnimating = false;
+  }
+  _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+  _scrollOffset = 0;
   updateImageSize();
   processFilters();
 }
@@ -2169,11 +2197,47 @@ void TerminalDisplay::hideEvent(QHideEvent*)
 /*                                                                           */
 /* ------------------------------------------------------------------------- */
 
+void TerminalDisplay::smoothScrollTick()
+{
+  if (!_screenWindow) {
+      _scrollTimer->stop();
+      _scrollAnimating = false;
+      return;
+  }
+  if (_scrollBar->maximum() < 0) {
+      // clamp
+  }
+  // clamp target
+  _scrollTarget = qBound(0.0, _scrollTarget, (qreal)_scrollBar->maximum());
+
+  _scrollPos += (_scrollTarget - _scrollPos) * 0.25;
+  if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
+      _scrollPos = _scrollTarget;
+      _scrollAnimating = false;
+      _scrollTimer->stop();
+  }
+  _scrollPos = qBound(0.0, _scrollPos, (qreal)_scrollBar->maximum());
+
+  int newRendered = (int)std::floor(_scrollPos);
+  _scrollOffset = -(_scrollPos - std::floor(_scrollPos)) * _fontHeight;
+  if (newRendered != _scrollRenderedLine) {
+      _scrollRenderedLine = newRendered;
+      _screenWindow->scrollTo(newRendered);
+      updateImage();
+  } else {
+      update();
+  }
+}
+
 void TerminalDisplay::scrollBarPositionChanged(int)
 {
   if ( !_screenWindow )
       return;
 
+  if (!_scrollAnimating) {
+      _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+      _scrollOffset = 0;
+  }
   _screenWindow->scrollTo( _scrollBar->value() );
 
   // if the thumb has been moved to the bottom of the _scrollBar then set
@@ -2899,8 +2963,30 @@ void TerminalDisplay::wheelEvent( QWheelEvent* ev )
   {
     bool canScroll = _scrollBar->maximum() > 0;
       if (canScroll)
-        _scrollBar->handleEvent(ev);
-    else
+      {
+        // smooth kinetic scrolling: compute increment like ScrollBar::handleEvent
+        int deltaY = ev->pixelDelta().y();
+        if (deltaY == 0)
+            deltaY = ev->angleDelta().y();
+        if (deltaY != 0) {
+            const int steps = deltaY / 120;
+            int stepCount = steps != 0 ? steps : (deltaY > 0 ? 1 : -1);
+            int increment = _scrollBar->singleStep() * stepCount;
+            if (ev->modifiers() & Qt::ControlModifier) {
+                int page = _scrollBar->pageStep() ? _scrollBar->pageStep() : _scrollBar->singleStep();
+                increment = page * stepCount;
+            }
+            _scrollTarget = qBound(0.0, _scrollTarget - (qreal)increment, (qreal)_scrollBar->maximum());
+            if (!_scrollAnimating) {
+                _scrollPos = (qreal)_scrollBar->value();
+                _scrollAnimating = true;
+                _scrollRenderedLine = (int)std::floor(_scrollPos);
+                _scrollTimer->start();
+            }
+            ev->accept();
+        }
+      }
+      else
     {
         // assume that each Up / Down key event will cause the terminal application
         // to scroll by one line.
@@ -3999,6 +4085,8 @@ void ScrollBar::setValue(int value)
 }
 
 int ScrollBar::value() const { return m_value; }
+int ScrollBar::singleStep() const { return m_singleStep; }
+int ScrollBar::pageStep() const { return m_pageStep; }
 int ScrollBar::minimum() const { return m_minimum; }
 int ScrollBar::maximum() const { return m_maximum; }
 
