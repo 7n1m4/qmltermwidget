@@ -2280,12 +2280,18 @@ void TerminalDisplay::setScroll(int cursor, int slines)
 
 void TerminalDisplay::scrollToEnd()
 {
+  if (_scrollAnimating) {
+      _scrollTimer->stop();
+      _scrollAnimating = false;
+  }
   disconnect(_scrollBar, SIGNAL(valueChanged(int)), this, SLOT(scrollBarPositionChanged(int)));
   _scrollBar->setValue( _scrollBar->maximum() );
   connect(_scrollBar, SIGNAL(valueChanged(int)), this, SLOT(scrollBarPositionChanged(int)));
 
   _screenWindow->scrollTo( _scrollBar->value() + 1 );
   _screenWindow->setTrackOutput( _screenWindow->atEndOfOutput() );
+  _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+  _scrollOffset = 0;
 }
 
 void TerminalDisplay::setScrollBarPosition(QTermWidget::ScrollBarPosition position)
