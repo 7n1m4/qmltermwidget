@@ -748,6 +748,7 @@ protected slots:
 
 private slots:
 
+    void smoothScrollTick();
     void swapColorTable();
     void tripleClickTimeout();  // resets possibleTripleClick
 
@@ -857,6 +858,14 @@ private:
 
     int _leftMargin;    // offset
     int _topMargin;    // offset
+
+    // smooth kinetic scrolling state
+    qreal _scrollPos;
+    qreal _scrollTarget;
+    qreal _scrollOffset;
+    bool _scrollAnimating;
+    int _scrollRenderedLine;
+    QTimer* _scrollTimer;
 
     int _lines;      // the number of lines that can be displayed in the widget
     int _columns;    // the number of columns that can be displayed in the widget

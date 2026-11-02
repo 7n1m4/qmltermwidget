@@ -423,6 +423,12 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
 ,_topBaseMargin(1)
 ,_drawLineChars(true)
 ,_mouseAutohideDelay(-1)
+,_scrollPos(0)
+,_scrollTarget(0)
+,_scrollOffset(0)
+,_scrollAnimating(false)
+,_scrollRenderedLine(0)
+,_scrollTimer(nullptr)
 {
   // terminal applications are not designed with Right-To-Left in mind,
   // so the layout is forced to Left-To-Right
@@ -458,6 +464,10 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
   connect(_blinkTimer, SIGNAL(timeout()), this, SLOT(blinkEvent()));
   _blinkCursorTimer   = new QTimer(this);
   connect(_blinkCursorTimer, SIGNAL(timeout()), this, SLOT(blinkCursorEvent()));
+
+  _scrollTimer = new QTimer(this);
+  _scrollTimer->setInterval(16);
+  connect(_scrollTimer, SIGNAL(timeout()), this, SLOT(smoothScrollTick()));
 
   setUsesMouse(true);
   setBracketedPasteMode(false);
