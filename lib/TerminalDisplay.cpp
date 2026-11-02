@@ -434,6 +434,9 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
 ,_scrollAnimating(false)
 ,_scrollRenderedLine(0)
 ,_scrollTimer(nullptr)
+,_smoothScrolling(true)
+,_savedUseFBORendering(true)
+,_fboFallbackActive(false)
 {
   // terminal applications are not designed with Right-To-Left in mind,
   // so the layout is forced to Left-To-Right
@@ -2198,6 +2201,15 @@ void TerminalDisplay::hideEvent(QHideEvent*)
 /*                                                                           */
 /* ------------------------------------------------------------------------- */
 
+void TerminalDisplay::restoreFBORendering()
+{
+    if (_fboFallbackActive) {
+        _fboFallbackActive = false;
+        if (_savedUseFBORendering)
+            setUseFBORendering(true);
+    }
+}
+
 void TerminalDisplay::smoothScrollTick()
 {
   if (!_screenWindow) {
@@ -2216,6 +2228,7 @@ void TerminalDisplay::smoothScrollTick()
       _scrollPos = _scrollTarget;
       _scrollAnimating = false;
       _scrollTimer->stop();
+      restoreFBORendering();
   }
   _scrollPos = qBound(0.0, _scrollPos, (qreal)_scrollBar->maximum());
 
@@ -2971,6 +2984,11 @@ void TerminalDisplay::wheelEvent( QWheelEvent* ev )
     bool canScroll = _scrollBar->maximum() > 0;
       if (canScroll)
       {
+        if (!_smoothScrolling) {
+            _scrollBar->handleEvent(ev);
+            ev->accept();
+            return;
+        }
         // smooth kinetic scrolling: compute increment like ScrollBar::handleEvent
         int deltaY = ev->pixelDelta().y();
         if (deltaY == 0)
@@ -2988,6 +3006,11 @@ void TerminalDisplay::wheelEvent( QWheelEvent* ev )
                 _scrollPos = (qreal)_scrollBar->value();
                 _scrollAnimating = true;
                 _scrollRenderedLine = (int)std::floor(_scrollPos);
+                if (_useFBORendering && !_fboFallbackActive) {
+                    _savedUseFBORendering = true;
+                    _fboFallbackActive = true;
+                    setUseFBORendering(false);
+                }
                 _scrollTimer->start();
             }
             ev->accept();
