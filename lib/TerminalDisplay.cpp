@@ -2132,9 +2132,11 @@ void TerminalDisplay::smoothScrollTick() {
   if (_lag > 8.0)  _factor = 0.4;
   if (_lag > 16.0) _factor = 0.6;
   if (_lag > 32.0) _factor = 0.8;
-  _scrollPos += _lag * _factor;
-  if (_scrollTarget - _scrollPos > 40.0)
-    _scrollPos = _scrollTarget - 40.0;
+  qreal _move = _lag * _factor;
+  const qreal _maxMove = 6.0; // cap scroll velocity: lines per 16 ms tick
+  if (_move > _maxMove)
+    _move = _maxMove;
+  _scrollPos += _move;
   if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
     // If more output has arrived since we started (bottom moved beyond
     // target), re-target and keep animating instead of stopping at a
