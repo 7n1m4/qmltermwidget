@@ -2133,7 +2133,7 @@ void TerminalDisplay::smoothScrollTick() {
     // target), re-target and keep animating instead of stopping at a
     // stale floor.
     qreal maxTarget = (qreal)_scrollBar->maximum();
-    if (_scrollTarget < maxTarget - 0.05) {
+    if (_screenWindow->trackOutput() && _scrollTarget < maxTarget - 0.05) {
       _scrollTarget = maxTarget;
       _scrollAnimating = true;
       if (!_scrollTimer->isActive())
