@@ -429,6 +429,7 @@ public:
    */
   bool useFBORendering() const { return _useFBORendering; }
   void restoreFBORendering();
+  void _fboKickIfNeeded();
   /**
    * Specify whether line chars should be drawn by ourselves or left to
    * underlying font rendering libraries.

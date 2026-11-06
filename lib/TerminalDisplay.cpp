@@ -373,8 +373,7 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
       _mouseMarks(false), _disabledBracketedPasteMode(false), _actSel(0),
       _wordSelectionMode(false), _lineSelectionMode(false),
       _preserveLineBreaks(false), _columnSelectionMode(false),
-      _scrollBar(nullptr),
-      _scrollbarLocation(QTermWidget::NoScrollBar),
+      _scrollBar(nullptr), _scrollbarLocation(QTermWidget::NoScrollBar),
       _wordCharacters(QLatin1String(":@-./_~")), _bellMode(SystemBeepBell),
       _blinking(false), _hasBlinker(false), _cursorBlinking(false),
       _hasBlinkingCursor(false), _allowBlinkingText(true), _ctrlDrag(false),
@@ -1119,12 +1118,34 @@ void TerminalDisplay::updateImage() {
     updateImageSize();
   }
 
+  // while a smooth animation is in flight, keep the rendered image pinned to
+  // the animated position instead of wherever notifyOutputChanged() left the
+  // window (it teleports to the bottom on every tracked line)
+  if (_scrollAnimating)
+    _screenWindow->scrollTo(_scrollRenderedLine);
   Character *const newimg = _screenWindow->getImage();
   int lines = _screenWindow->windowLines();
   int columns = _screenWindow->windowColumns();
 
   setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
 
+  // Smooth autoscroll: when following output and the bottom has moved,
+  // (re)start the animation and aim at the new bottom instead of
+  // teleporting there. Only while tracking output.
+  if (_smoothScrolling && _screenWindow->trackOutput()) {
+    const qreal bottom = (qreal)_scrollBar->maximum();
+    if (_scrollBar->value() >= _scrollBar->maximum() - 1) {
+      _scrollTarget = bottom;
+      if (!_scrollAnimating) {
+        _scrollPos = (qreal)_scrollBar->value();
+        _scrollRenderedLine = (int)std::floor(_scrollPos);
+        _scrollAnimating = true;
+        _fboKickIfNeeded();
+      }
+      if (!_scrollTimer->isActive())
+        _scrollTimer->start();
+    }
+  }
   // keep fractional smooth-scroll state consistent
   if (!_scrollAnimating) {
     _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
@@ -2077,6 +2098,13 @@ void TerminalDisplay::restoreFBORendering() {
       setUseFBORendering(true);
   }
 }
+void TerminalDisplay::_fboKickIfNeeded() {
+  if (_useFBORendering && !_fboFallbackActive) {
+    _savedUseFBORendering = true;
+    _fboFallbackActive = true;
+    setUseFBORendering(false);
+  }
+}
 void TerminalDisplay::setSmoothScrolling(bool smooth) {
   _smoothScrolling = smooth;
   if (!smooth && _scrollAnimating) {
@@ -2101,18 +2129,30 @@ void TerminalDisplay::smoothScrollTick() {
 
   _scrollPos += (_scrollTarget - _scrollPos) * 0.25;
   if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
-    _scrollPos = _scrollTarget;
-    _scrollAnimating = false;
-    _scrollTimer->stop();
-    // sync the scrollbar / screen window to the final (integer) target
-    disconnect(_scrollBar, SIGNAL(valueChanged(int)), this,
-               SLOT(scrollBarPositionChanged(int)));
-    _scrollBar->setValue(
-        qBound(0, (int)std::lround(_scrollTarget), _scrollBar->maximum()));
-    connect(_scrollBar, SIGNAL(valueChanged(int)), this,
-            SLOT(scrollBarPositionChanged(int)));
-    scrollBarPositionChanged(0);
-    restoreFBORendering();
+    // If more output has arrived since we started (bottom moved beyond
+    // target), re-target and keep animating instead of stopping at a
+    // stale floor.
+    qreal maxTarget = (qreal)_scrollBar->maximum();
+    if (_scrollTarget < maxTarget - 0.05) {
+      _scrollTarget = maxTarget;
+      _scrollAnimating = true;
+      if (!_scrollTimer->isActive())
+        _scrollTimer->start();
+      // fall through to recompute/render below without snapping
+    } else {
+      _scrollPos = _scrollTarget;
+      _scrollAnimating = false;
+      _scrollTimer->stop();
+      // sync the scrollbar / screen window to the final (integer) target
+      disconnect(_scrollBar, SIGNAL(valueChanged(int)), this,
+                 SLOT(scrollBarPositionChanged(int)));
+      _scrollBar->setValue(
+          qBound(0, (int)std::lround(_scrollTarget), _scrollBar->maximum()));
+      connect(_scrollBar, SIGNAL(valueChanged(int)), this,
+              SLOT(scrollBarPositionChanged(int)));
+      scrollBarPositionChanged(0);
+      restoreFBORendering();
+    }
   }
   _scrollPos = qBound(0.0, _scrollPos, (qreal)_scrollBar->maximum());
 
@@ -2175,6 +2215,35 @@ void TerminalDisplay::setScroll(int cursor, int slines) {
 }
 
 void TerminalDisplay::scrollToEnd() {
+  // Smooth auto-scroll follow when enabled.
+  if (_smoothScrolling) {
+    qreal bottom = (qreal)_scrollBar->maximum();
+    if (bottom - _scrollPos > qMax(4.0, (qreal)_lines / 2.0)) {
+      // huge jump -> instant
+      if (_scrollAnimating) {
+        _scrollTimer->stop();
+        _scrollAnimating = false;
+        restoreFBORendering();
+      }
+      disconnect(_scrollBar, SIGNAL(valueChanged(int)), this,
+                 SLOT(scrollBarPositionChanged(int)));
+      _scrollBar->setValue(_scrollBar->maximum());
+      connect(_scrollBar, SIGNAL(valueChanged(int)), this,
+              SLOT(scrollBarPositionChanged(int)));
+      _screenWindow->scrollTo(_scrollBar->value() + 1);
+      _screenWindow->setTrackOutput(_screenWindow->atEndOfOutput());
+      _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
+      _scrollOffset = 0;
+      return;
+    }
+    _scrollTarget = bottom;
+    _scrollAnimating = true;
+    _screenWindow->setTrackOutput(true);
+    if (!_scrollTimer->isActive())
+      _scrollTimer->start();
+    return;
+  }
+  // original instant path
   if (_scrollAnimating) {
     _scrollTimer->stop();
     _scrollAnimating = false;
@@ -2877,15 +2946,12 @@ void TerminalDisplay::wheelEvent(QWheelEvent *ev) {
         }
         _scrollTarget = qBound(0.0, _scrollTarget - (qreal)increment,
                                (qreal)_scrollBar->maximum());
+        _screenWindow->setTrackOutput(false);
         if (!_scrollAnimating) {
           _scrollPos = (qreal)_scrollBar->value();
           _scrollAnimating = true;
           _scrollRenderedLine = (int)std::floor(_scrollPos);
-          if (_useFBORendering && !_fboFallbackActive) {
-            _savedUseFBORendering = true;
-            _fboFallbackActive = true;
-            setUseFBORendering(false);
-          }
+          _fboKickIfNeeded();
           _scrollTimer->start();
         }
         ev->accept();
