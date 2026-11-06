@@ -421,18 +421,7 @@ public:
                : QQuickPaintedItem::Image;
     QQuickPaintedItem::setRenderTarget(target);
   }
-  void setSmoothScrolling(bool smooth) {
-    _smoothScrolling = smooth;
-    if (!smooth && _scrollAnimating) {
-      _scrollTimer->stop();
-      _scrollAnimating = false;
-      _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
-      _scrollOffset = 0;
-      restoreFBORendering();
-      update();
-    }
-    emit smoothScrollingChanged();
-  }
+  void setSmoothScrolling(bool smooth);
   bool smoothScrolling() const { return _smoothScrolling; }
 
   /**
@@ -713,6 +702,7 @@ signals:
   void blinkingCursorStateChanged();
   void boldIntenseChanged();
   void italicEnabledChanged();
+  void smoothScrollingChanged();
 
 protected:
   bool event(QEvent *) override;
@@ -1121,7 +1111,7 @@ public:
   bool isTransient() const { return false; }
   void handleEvent(QEvent *); // no-op hook
 
-  void smoothScrollingChanged();
+signals:
   void valueChanged(int value);
 
 private:
