@@ -389,8 +389,9 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
       m_full_cursor_height(false), _leftBaseMargin(1), _topBaseMargin(1),
       _drawLineChars(true), _mouseAutohideDelay(-1), _scrollPos(0),
       _scrollTarget(0), _scrollOffset(0), _scrollAnimating(false),
-      _scrollRenderedLine(0), _scrollTimer(nullptr), _smoothScrolling(true),
-      _savedUseFBORendering(true), _fboFallbackActive(false) {
+      _scrollRenderedLine(0), _scrollTimer(nullptr), _prevMax(0),
+      _smoothScrolling(true), _savedUseFBORendering(true),
+      _fboFallbackActive(false) {
   // terminal applications are not designed with Right-To-Left in mind,
   // so the layout is forced to Left-To-Right
   // setLayoutDirection(Qt::LeftToRight);
@@ -2127,16 +2128,14 @@ void TerminalDisplay::smoothScrollTick() {
   // clamp target
   _scrollTarget = qBound(0.0, _scrollTarget, (qreal)_scrollBar->maximum());
 
-  qreal _lag = _scrollTarget - _scrollPos;
-  qreal _factor = 0.25;
-  if (_lag > 8.0)  _factor = 0.4;
-  if (_lag > 16.0) _factor = 0.6;
-  if (_lag > 32.0) _factor = 0.8;
-  qreal _move = _lag * _factor;
-  const qreal _maxMove = 6.0; // cap scroll velocity: lines per 16 ms tick
-  if (_move > _maxMove)
-    _move = _maxMove;
-  _scrollPos += _move;
+  // Dynamic speed: scale easing to how fast chunks arrive (bottom growth
+  // since the previous tick). Trickle -> gentle 0.25; flood -> fast
+  // catch-up, still eased, never a hard teleport or velocity cap.
+  const qreal maxNow = (qreal)_scrollBar->maximum();
+  const qreal _arrived = qMax(0.0, maxNow - _prevMax);
+  _prevMax = maxNow;
+  const qreal _factor = qBound(0.25, 0.25 + _arrived * 0.05, 0.95);
+  _scrollPos += (_scrollTarget - _scrollPos) * _factor;
   if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
     // If more output has arrived since we started (bottom moved beyond
     // target), re-target and keep animating instead of stopping at a
@@ -2152,6 +2151,7 @@ void TerminalDisplay::smoothScrollTick() {
       _scrollPos = _scrollTarget;
       _scrollAnimating = false;
       _scrollTimer->stop();
+      _prevMax = (qreal)_scrollBar->maximum();
       // sync the scrollbar / screen window to the final (integer) target
       disconnect(_scrollBar, SIGNAL(valueChanged(int)), this,
                  SLOT(scrollBarPositionChanged(int)));

@@ -899,6 +899,7 @@ private:
   bool _scrollAnimating;
   int _scrollRenderedLine;
   QTimer *_scrollTimer;
+  qreal _prevMax; // bottom (scrollbar max) at previous tick: arrival-rate probe
 
   int _lines;   // the number of lines that can be displayed in the widget
   int _columns; // the number of columns that can be displayed in the widget
