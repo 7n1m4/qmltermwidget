@@ -1501,10 +1501,10 @@ void TerminalDisplay::paint(QPainter *painter) {
   else
     regToDraw &= cr;
 
-  if (_scrollOffset != 0) {
-    // expand clip to cover one extra line
-    regToDraw += QRegion(cr.adjusted(0, -_fontHeight, 0, _fontHeight));
-  }
+  // NOTE: do NOT expand the clip region during fractional scrolling. The
+  // image only contains windowLines rows; painting a fractional extra line
+  // reads outside _image -> garbage band that changes every tick -> flicker.
+  // Accept a 1-line background gap at the leading edge instead (no flicker).
 
   painter->save();
   if (_scrollOffset != 0)
