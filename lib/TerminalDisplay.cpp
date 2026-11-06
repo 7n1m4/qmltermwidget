@@ -2127,7 +2127,14 @@ void TerminalDisplay::smoothScrollTick() {
   // clamp target
   _scrollTarget = qBound(0.0, _scrollTarget, (qreal)_scrollBar->maximum());
 
-  _scrollPos += (_scrollTarget - _scrollPos) * 0.25;
+  qreal _lag = _scrollTarget - _scrollPos;
+  qreal _factor = 0.25;
+  if (_lag > 8.0)  _factor = 0.4;
+  if (_lag > 16.0) _factor = 0.6;
+  if (_lag > 32.0) _factor = 0.8;
+  _scrollPos += _lag * _factor;
+  if (_scrollTarget - _scrollPos > 40.0)
+    _scrollPos = _scrollTarget - 40.0;
   if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
     // If more output has arrived since we started (bottom moved beyond
     // target), re-target and keep animating instead of stopping at a
