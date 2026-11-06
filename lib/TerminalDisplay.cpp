@@ -390,8 +390,8 @@ TerminalDisplay::TerminalDisplay(QQuickItem *parent)
       _drawLineChars(true), _mouseAutohideDelay(-1), _scrollPos(0),
       _scrollTarget(0), _scrollOffset(0), _scrollAnimating(false),
       _scrollRenderedLine(0), _scrollTimer(nullptr), _prevMax(0),
-      _smoothScrolling(true), _savedUseFBORendering(true),
-      _fboFallbackActive(false) {
+      _animationSpeed(0.25), _smoothScrolling(true),
+      _savedUseFBORendering(true), _fboFallbackActive(false) {
   // terminal applications are not designed with Right-To-Left in mind,
   // so the layout is forced to Left-To-Right
   // setLayoutDirection(Qt::LeftToRight);
@@ -1122,6 +1122,27 @@ void TerminalDisplay::updateImage() {
   // while a smooth animation is in flight, keep the rendered image pinned to
   // the animated position instead of wherever notifyOutputChanged() left the
   // window (it teleports to the bottom on every tracked line)
+  // Queued-animation autoscroll: while a previous animation is in flight,
+  // incoming output only queues (its bottom is picked up when the current
+  // animation completes). When idle, the next animation starts from the
+  // previous bottom so the view never teleports to the new content.
+  if (_smoothScrolling && _screenWindow->trackOutput()) {
+    const qreal bottom =
+        (qreal)(_screenWindow->lineCount() - _screenWindow->windowLines());
+    if (bottom > _scrollTarget + 0.05 && !_scrollAnimating) {
+      _scrollPos = qBound(0.0, _prevMax, bottom);
+      _scrollTarget = bottom;
+      _scrollRenderedLine = (int)std::floor(_scrollPos);
+      _scrollAnimating = true;
+      // speed scales with how much text arrived (queued distance)
+      const qreal d = _scrollTarget - _scrollPos;
+      _animationSpeed = qBound(0.25, 0.25 + d * 0.02, 0.85);
+      _prevMax = bottom;
+      _fboKickIfNeeded();
+      if (!_scrollTimer->isActive())
+        _scrollTimer->start();
+    }
+  }
   if (_scrollAnimating)
     _screenWindow->scrollTo(_scrollRenderedLine);
   Character *const newimg = _screenWindow->getImage();
@@ -1130,23 +1151,6 @@ void TerminalDisplay::updateImage() {
 
   setScroll(_screenWindow->currentLine(), _screenWindow->lineCount());
 
-  // Smooth autoscroll: when following output and the bottom has moved,
-  // (re)start the animation and aim at the new bottom instead of
-  // teleporting there. Only while tracking output.
-  if (_smoothScrolling && _screenWindow->trackOutput()) {
-    const qreal bottom = (qreal)_scrollBar->maximum();
-    if (_scrollBar->value() >= _scrollBar->maximum() - 1) {
-      _scrollTarget = bottom;
-      if (!_scrollAnimating) {
-        _scrollPos = (qreal)_scrollBar->value();
-        _scrollRenderedLine = (int)std::floor(_scrollPos);
-        _scrollAnimating = true;
-        _fboKickIfNeeded();
-      }
-      if (!_scrollTimer->isActive())
-        _scrollTimer->start();
-    }
-  }
   // keep fractional smooth-scroll state consistent
   if (!_scrollAnimating) {
     _scrollPos = _scrollTarget = (qreal)_scrollBar->value();
@@ -2128,30 +2132,22 @@ void TerminalDisplay::smoothScrollTick() {
   // clamp target
   _scrollTarget = qBound(0.0, _scrollTarget, (qreal)_scrollBar->maximum());
 
-  // Dynamic speed: scale easing to how fast chunks arrive (bottom growth
-  // since the previous tick). Trickle -> gentle 0.25; flood -> fast
-  // catch-up, still eased, never a hard teleport or velocity cap.
-  const qreal maxNow = (qreal)_scrollBar->maximum();
-  const qreal _arrived = qMax(0.0, maxNow - _prevMax);
-  _prevMax = maxNow;
-  const qreal _factor = qBound(0.25, 0.25 + _arrived * 0.05, 0.95);
-  _scrollPos += (_scrollTarget - _scrollPos) * _factor;
+  _scrollPos += (_scrollTarget - _scrollPos) * _animationSpeed;
   if (qAbs(_scrollTarget - _scrollPos) < 0.05) {
-    // If more output has arrived since we started (bottom moved beyond
-    // target), re-target and keep animating instead of stopping at a
-    // stale floor.
-    qreal maxTarget = (qreal)_scrollBar->maximum();
-    if (_screenWindow->trackOutput() && _scrollTarget < maxTarget - 0.05) {
-      _scrollTarget = maxTarget;
-      _scrollAnimating = true;
-      if (!_scrollTimer->isActive())
-        _scrollTimer->start();
-      // fall through to recompute/render below without snapping
+    _scrollPos = _scrollTarget;
+    const qreal bottom = (qreal)_scrollBar->maximum();
+    if (_screenWindow->trackOutput() && bottom > _scrollTarget + 0.05) {
+      // Animation complete. Text arrived while it was running: start the
+      // next queued animation from here, speed matched to how much came in.
+      const qreal d = bottom - _scrollTarget;
+      _scrollTarget = bottom;
+      _animationSpeed = qBound(0.25, 0.25 + d * 0.02, 0.85);
+      _prevMax = bottom;
+      // keep animating; fall through to render this tick
     } else {
-      _scrollPos = _scrollTarget;
+      // nothing queued: settle and release the FBO fallback
       _scrollAnimating = false;
       _scrollTimer->stop();
-      _prevMax = (qreal)_scrollBar->maximum();
       // sync the scrollbar / screen window to the final (integer) target
       disconnect(_scrollBar, SIGNAL(valueChanged(int)), this,
                  SLOT(scrollBarPositionChanged(int)));
@@ -2160,7 +2156,10 @@ void TerminalDisplay::smoothScrollTick() {
       connect(_scrollBar, SIGNAL(valueChanged(int)), this,
               SLOT(scrollBarPositionChanged(int)));
       scrollBarPositionChanged(0);
-      restoreFBORendering();
+      if (!_scrollAnimating)
+        restoreFBORendering();
+      _prevMax = (qreal)_scrollBar->maximum();
+      return;
     }
   }
   _scrollPos = qBound(0.0, _scrollPos, (qreal)_scrollBar->maximum());
@@ -2247,6 +2246,9 @@ void TerminalDisplay::scrollToEnd() {
     }
     _scrollTarget = bottom;
     _scrollAnimating = true;
+    _animationSpeed =
+        qBound(0.25, 0.25 + (_scrollTarget - _scrollPos) * 0.02, 0.85);
+    _prevMax = bottom;
     _screenWindow->setTrackOutput(true);
     if (!_scrollTimer->isActive())
       _scrollTimer->start();
@@ -2960,6 +2962,9 @@ void TerminalDisplay::wheelEvent(QWheelEvent *ev) {
           _scrollPos = (qreal)_scrollBar->value();
           _scrollAnimating = true;
           _scrollRenderedLine = (int)std::floor(_scrollPos);
+          _animationSpeed =
+              qBound(0.25, 0.25 + (_scrollTarget - _scrollPos) * 0.02, 0.85);
+          _prevMax = (qreal)_scrollBar->maximum();
           _fboKickIfNeeded();
           _scrollTimer->start();
         }

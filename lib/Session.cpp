@@ -858,18 +858,13 @@ char*,int)) );
 }
 */
 void Session::onReceiveBlock(const char *buf, int len) {
-  // Forced terminal buffer: everything pipes through here before the
-  // emulator parses it, quantizing rendering to the pace tick so smooth
-  // autoscroll can always keep up. Uncapped throughput: the buffer drains
-  // fully every tick; scroll speed adapts downstream to arrival rate.
+  // Forced terminal buffer: EVERY chunk pipes through here before the
+  // emulator parses it — no bypass path. Chunks arriving faster than the
+  // pace tick simply queue; the next scroll animation adapts its speed
+  // downstream to how much text came in.
   _outputBuffer.append(buf, len);
-  if (!_outputPaceTimer->isActive()) {
-    // First chunk after idle renders immediately (interactive latency
-    // stays near zero); ongoing floods coalesce into ticks.
-    drainOutputBuffer();
-  } else {
-    _outputPaceTimer->start(); // keep the tick alive while data flows
-  }
+  if (!_outputPaceTimer->isActive())
+    _outputPaceTimer->start();
 }
 
 void Session::drainOutputBuffer() {
